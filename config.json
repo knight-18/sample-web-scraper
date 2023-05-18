@@ -1,0 +1,9 @@
+{
+    "SCRAPER": {
+        "ENTRY_URL": "https://www.scrapethissite.com/pages/simple/"
+    },
+    "AWS": {
+        "SNS_TOPIC_ARN": "ARN of the SNS Topic to which notifications need to be published",
+        "S3_BUCKET_NAME": "sample-scraper-data"
+    }
+}
