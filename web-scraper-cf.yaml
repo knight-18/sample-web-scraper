@@ -1,0 +1,484 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to deploy resources for web scraper
+Parameters:
+  SubnetAIdParam:
+    Description: ID of first subnet which would be used for ECS Task
+    Type: String
+  SubnetBIdParam:
+    Description: ID of second subnet which would be used for ECS Task
+    Type: String
+  EmailId:
+    Description: Email ID of the use to be notified in case of scraper error through SNS
+    Type: String
+Resources:
+  # Amazon S3 Bucket
+  ScraperBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+        - Key: Project
+          Value: Web Scraper
+  # ECS Cluster
+  ECSCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: scraper-fargate-cluster
+      CapacityProviders:
+        - "FARGATE"
+        - "FARGATE_SPOT"
+  # ECS task to run web scraper container
+  ECSTaskDefinition:
+    Type: "AWS::ECS::TaskDefinition"
+    Properties:
+      Family: web-scraper-task
+      Cpu: "1024"
+      Memory: "3072"
+      NetworkMode: awsvpc
+      ExecutionRoleArn:
+        Fn::GetAtt: [WebScraperTaskExecutionRole, Arn]
+      TaskRoleArn:
+        Fn::GetAtt: [WebScraperTaskRole, Arn]
+      ContainerDefinitions:
+        - Name: web-scraper-container
+          Image: public.ecr.aws/c3w5o8g3/sample-web-scraper:latest
+          Essential: true
+    DependsOn:
+      - WebScraperTaskExecutionRole
+      - WebScraperTaskRole
+
+  # ECS Task Execution Role
+  WebScraperTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        {
+          "Version": "2008-10-17",
+          "Statement":
+            [
+              {
+                "Sid": "",
+                "Effect": "Allow",
+                "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+                "Action": "sts:AssumeRole",
+              },
+            ],
+        }
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  # ECS Task Role
+  WebScraperTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        {
+          "Version": "2012-10-17",
+          "Statement":
+            [
+              {
+                "Sid": "",
+                "Effect": "Allow",
+                "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+                "Action": "sts:AssumeRole",
+              },
+            ],
+        }
+      Policies:
+        - PolicyName: "WebScraperTaskPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "1"
+                Effect: "Allow"
+                Action: "s3:PutObject"
+                Resource:
+                  - Fn::Join:
+                    - ""
+                    - - Fn::GetAtt: [ScraperBucket, Arn]
+                      - "/*"
+              - Sid: "2"
+                Effect: Allow
+                Action: "sns:Publish"
+                Resource:
+                  - Ref: SNSTopic
+    DependsOn:
+      - ScraperBucket
+      - SNSTopic
+  # Lambda function to run ECS Task
+  RunTaskLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda Function to run scraper job on-demand
+      FunctionName: run-scraper
+      Handler: index.handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt: [RunTaskLambdaFunctionIAMRole, Arn]
+      Runtime: nodejs16.x
+      Timeout: 3
+      Environment:
+        Variables:
+          ECS_CLUSTER_NAME:
+            Ref: ECSCluster
+          SUBNET_A_ID:
+            Ref: SubnetAIdParam
+          SUBNET_B_ID:
+            Ref: SubnetBIdParam
+          TASK_DEFINITION_NAME: web-scraper-task
+          S3_BUCKET_NAME:
+            Ref: ScraperBucket
+          SNS_TOPIC_ARN: 
+            Ref: SNSTopic
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk')
+          exports.handler = async (event) => {
+              console.log("Event:", event);
+              const ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
+                  SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN,
+                  S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
+                  TASK_DEFINITION_NAME = process.env.TASK_DEFINITION_NAME,
+                  ECS_CLUSTER_NAME = process.env.ECS_CLUSTER_NAME,
+                  SUBNET_A_ID = process.env.SUBNET_A_ID,
+                  SUBNET_B_ID = process.env.SUBNET_B_ID
+
+              try {
+                  const ECS = new AWS.ECS();
+                  const taskParams = {
+                      taskDefinition: TASK_DEFINITION_NAME,
+                      cluster: ECS_CLUSTER_NAME,
+                      count: 1,
+                      launchType: "FARGATE",
+                      platformVersion: "LATEST",
+                      networkConfiguration: {
+                          awsvpcConfiguration: {
+                              subnets: [
+                                  SUBNET_A_ID,
+                                  SUBNET_B_ID
+                              ],
+                              assignPublicIp: 'ENABLED',
+                          }
+                      },
+                      overrides: {
+                          containerOverrides: [
+                              {
+                                  name: "web-scraper-container",
+                                  environment: [
+                                      {
+                                          name: "ENTRY_URL",
+                                          value: ENTRY_URL
+                                      },
+                                      {
+                                          name: "SNS_TOPIC_ARN",
+                                          value: SNS_TOPIC_ARN
+                                      },
+                                      {
+                                          name: "S3_BUCKET_NAME",
+                                          value: S3_BUCKET_NAME
+                                      }
+                                  ]
+                              }
+                          ]
+                      }
+                  };
+                  console.log("Task Parameters: ", taskParams);
+                  let res = await ECS.runTask(taskParams).promise();
+                  console.log("Task Running: ", res);
+                  const response = {
+                      statusCode: 200,
+                      body: JSON.stringify(`Task Started`),
+                      headers: {
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "*"
+                      },
+                  };
+                  return response;
+              } catch (error) {
+                  console.log("Error: ", error);
+                  const response = {
+                      statusCode: 400,
+                      body: JSON.stringify(`Error: Task failed to start`),
+                      headers: {
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "*"
+                      },
+                  };
+                  return response;
+              }
+          };
+      Tags:
+        - Key: Project
+          Value: Web Scraper
+    DependsOn:
+      - RunTaskLambdaFunctionIAMRole
+      - RunTaskLambdaFunctionIAMRoleDefaultPolicy
+      - ECSCluster
+      - ScraperBucket
+      - SNSTopic
+  # IAM Role for Run Task Lambda Function
+  RunTaskLambdaFunctionIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  # Default Policy for RunTaskLambdaFunctionIAMRole
+  RunTaskLambdaFunctionIAMRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: 1
+            Effect: Allow
+            Action:
+              - ecs:RunTask
+            Resource:
+              - Ref: ECSTaskDefinition
+          - Sid: 2
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: 
+              - Fn::GetAtt: [WebScraperTaskExecutionRole, Arn]
+              - Fn::GetAtt: [WebScraperTaskRole, Arn]
+      PolicyName: RunTaskLambdaFunctionIAMRoleDefaultPolicy
+      Roles:
+        - Ref: RunTaskLambdaFunctionIAMRole
+    DependsOn:
+      - ECSTaskDefinition
+
+  # Lambda function to create eventbridge rule
+  ScheduleScraperLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Function to create an eventbridge rule to schedule ECS task
+      FunctionName: schedule-scraper
+      Handler: index.handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt: [ScheduleScraperLambdaFunctionIAMRole, Arn]
+      Runtime: nodejs16.x
+      Timeout: 3
+      Environment:
+        Variables:
+          EB_RULE_ARN:
+            Fn::GetAtt: [EventbridgeInvokeECSIAMRole, Arn]
+          SUBNET_A_ID:
+            Ref: SubnetAIdParam
+          SUBNET_B_ID:
+            Ref: SubnetBIdParam
+          TASK_DEFINITION_ARN:
+            Ref: ECSTaskDefinition
+          ECS_CLUSTER_ARN:
+            Fn::GetAtt: [ECSCluster, Arn]
+          S3_BUCKET_NAME:
+            Ref: ScraperBucket
+          SNS_TOPIC_ARN: 
+            Ref: SNSTopic
+
+      Code:
+        ZipFile: |
+          const AWS = require("aws-sdk")
+          exports.handler = async (event) => {
+              console.log("Event: ", event)
+              const EB_RULE_ARN = process.env.EB_RULE_ARN,
+                  SUBNET_A_ID = process.env.SUBNET_A_ID,
+                  SUBNET_B_ID = process.env.SUBNET_B_ID,
+                  TASK_DEFINITION_ARN = process.env.TASK_DEFINITION_ARN,
+                  ECS_CLUSTER_ARN = process.env.ECS_CLUSTER_ARN,
+                  S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
+                  ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
+                  SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN,
+                  scheduleValue = event.scheduleValue,
+                  scheduleUnit = event.scheduleUnit
+
+              let response = {
+                  statusCode: 200,
+                  body: "Success",
+                  headers: {
+                      "Access-Control-Allow-Origin": "*",
+                      "Access-Control-Allow-Headers": "*"
+                  },
+              }
+              try {
+                  const eb = new AWS.EventBridge();
+                  const ruleParams = {
+                      Name: "ecs-task-scheduler",
+                      Description: "Rules schedules to run ECS task",
+                      EventBusName: "default",
+                      RoleArn: EB_RULE_ARN,
+                      ScheduleExpression: `rate(${scheduleValue} ${scheduleUnit})`,
+                      State: "ENABLED"
+                  }
+                  console.log("RULE PARAMS: ", ruleParams)
+                  let ruleResponse = await eb.putRule(ruleParams).promise()
+
+                  console.log("Rule Response: ", ruleResponse)
+                  let ruleArn = ruleResponse.RuleArn
+
+                  let inputJson = {
+                      "containerOverrides": [{
+                          "name": "web-scraper-container",
+                          "environment": [
+                              {
+                                  name: "ENTRY_URL",
+                                  value: ENTRY_URL
+                              },
+                              {
+                                  name: "SNS_TOPIC_ARN",
+                                  value: SNS_TOPIC_ARN
+                              },
+                              {
+                                  name: "S3_BUCKET_NAME",
+                                  value: S3_BUCKET_NAME
+                              }
+                          ]
+                      }]
+                  }
+
+                  let targetParams = {
+                      Rule: "ecs-task-scheduler",
+                      Targets: [{
+                          Arn: ECS_CLUSTER_ARN,
+                          Id: "ecs-task-target",
+                          RoleArn: EB_RULE_ARN,
+                          Input: JSON.stringify(inputJson),
+                          EcsParameters: {
+                              TaskDefinitionArn: TASK_DEFINITION_ARN,
+                              LaunchType: "FARGATE",
+                              NetworkConfiguration: {
+                                  awsvpcConfiguration: {
+                                      Subnets: [
+                                          SUBNET_A_ID,
+                                          SUBNET_B_ID
+                                      ],
+                                      AssignPublicIp: "ENABLED",
+                                  }
+                              },
+                          }
+                      }]
+                  }
+                  console.log("Target Params: ", targetParams)
+
+                  let targetResponse = await eb.putTargets(targetParams).promise()
+                  console.log("Target Response: ", targetResponse)
+              }
+              catch (error) {
+                  console.log("Error: ", error)
+                  response.statusCode = 500
+                  response.body = `Error: ${JSON.stringify(error)}`
+              }
+              return response;
+          };
+      Tags:
+        - Key: Project
+          Value: Web Scraper
+    DependsOn:
+      - ScheduleScraperLambdaFunctionIAMRole
+      - ScraperBucket
+      - ECSCluster
+      - ECSTaskDefinition
+      - EventbridgeInvokeECSIAMRole
+      - SNSTopic
+  # IAM Role for Scheduler Scraper Lambda Function
+  ScheduleScraperLambdaFunctionIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ScheduleScraperLambdaFunctionIAMRoleDefaultPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: 1
+                Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:PutTargets
+                Resource:
+                  - Fn::Join:
+                      [
+                        "",
+                        ["arn:aws:events:*:", Ref: AWS::AccountId, ":rule/*"],
+                      ]
+              - Sid: 2
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - Fn::GetAtt: [EventbridgeInvokeECSIAMRole, Arn]
+    DependsOn:
+      - EventbridgeInvokeECSIAMRole
+
+  # IAM Role for Eventbridge to invoke ECS
+  EventbridgeInvokeECSIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "ecs:RunTask"
+                Resource:
+                  - Ref: ECSTaskDefinition
+                Condition:
+                  ArnLike:
+                    ecs:cluster:
+                      Fn::GetAtt: [ECSCluster, Arn]
+              - Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource:
+                  - "*"
+                Condition:
+                  StringLike:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+    DependsOn:
+      - ECSCluster
+  SNSTopic: 
+    Type: AWS::SNS::Topic
+    Properties: 
+      Subscription: 
+        - Endpoint: 
+            Ref: EmailId
+          Protocol: email
+Outputs:
+  S3_BUCKET_NAME:
+    Description: Bucket which stores the output scraped data
+    Value: 
+      Ref: ScraperBucket
+    
