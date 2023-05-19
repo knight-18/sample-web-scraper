@@ -127,7 +127,7 @@ Resources:
             Ref: SubnetAIdParam
           SUBNET_B_ID:
             Ref: SubnetBIdParam
-          TASK_DEFINITION_NAME: web-scraper-task
+          TASK_DEFINITION_NAME: web-scraper-task:1
           S3_BUCKET_NAME:
             Ref: ScraperBucket
           SNS_TOPIC_ARN: 
@@ -135,18 +135,17 @@ Resources:
       Code:
         ZipFile: |
           const AWS = require('aws-sdk')
+          const ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
+            SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN,
+            S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
+            TASK_DEFINITION_NAME = process.env.TASK_DEFINITION_NAME,
+            ECS_CLUSTER_NAME = process.env.ECS_CLUSTER_NAME,
+            SUBNET_A_ID = process.env.SUBNET_A_ID,
+            SUBNET_B_ID = process.env.SUBNET_B_ID
+          const ECS = new AWS.ECS();
           exports.handler = async (event) => {
               console.log("Event:", event);
-              const ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
-                  SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN,
-                  S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
-                  TASK_DEFINITION_NAME = process.env.TASK_DEFINITION_NAME,
-                  ECS_CLUSTER_NAME = process.env.ECS_CLUSTER_NAME,
-                  SUBNET_A_ID = process.env.SUBNET_A_ID,
-                  SUBNET_B_ID = process.env.SUBNET_B_ID
-
               try {
-                  const ECS = new AWS.ECS();
                   const taskParams = {
                       taskDefinition: TASK_DEFINITION_NAME,
                       cluster: ECS_CLUSTER_NAME,
@@ -292,18 +291,18 @@ Resources:
 
       Code:
         ZipFile: |
-          const AWS = require("aws-sdk")
+          const AWS = require("aws-sdk"),
+            EB_RULE_ARN = process.env.EB_RULE_ARN,
+            SUBNET_A_ID = process.env.SUBNET_A_ID,
+            SUBNET_B_ID = process.env.SUBNET_B_ID,
+            TASK_DEFINITION_ARN = process.env.TASK_DEFINITION_ARN,
+            ECS_CLUSTER_ARN = process.env.ECS_CLUSTER_ARN,
+            S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
+            ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
+            SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN
           exports.handler = async (event) => {
               console.log("Event: ", event)
-              const EB_RULE_ARN = process.env.EB_RULE_ARN,
-                  SUBNET_A_ID = process.env.SUBNET_A_ID,
-                  SUBNET_B_ID = process.env.SUBNET_B_ID,
-                  TASK_DEFINITION_ARN = process.env.TASK_DEFINITION_ARN,
-                  ECS_CLUSTER_ARN = process.env.ECS_CLUSTER_ARN,
-                  S3_BUCKET_NAME = process.env.S3_BUCKET_NAME,
-                  ENTRY_URL = "https://www.scrapethissite.com/pages/simple/",
-                  SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN,
-                  scheduleValue = event.scheduleValue,
+              const scheduleValue = event.scheduleValue,
                   scheduleUnit = event.scheduleUnit
 
               let response = {
@@ -477,7 +476,7 @@ Resources:
             Ref: EmailId
           Protocol: email
 Outputs:
-  S3_BUCKET_NAME:
+  S3BUCKETNAME:
     Description: Bucket which stores the output scraped data
     Value: 
       Ref: ScraperBucket
