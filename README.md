@@ -1,7 +1,8 @@
 
 # WEB-SCRAPER-APPLICATION-ON-AWS
 
-An application which demonstrates web scraping solution on AWS using Serverless services to schedule scraping jobs or run on-demand.
+An application which demonstrates web scraping solution on AWS using Serverless services to schedule scraping jobs or run on-demand.It creates Amazon ECS tasks which 
+uses docker image of an application to extract data and store in Amazon S3 bucket. The jobs can be triggered using AWS Lambda functions. 
 
 ## Application Features
 - Run scraping jobs on an on-demand basis
